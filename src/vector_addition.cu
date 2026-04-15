@@ -13,7 +13,7 @@ __global__ void vectorAdd(const float* a, const float* b, float* c, int n) {
 int runBenchmark(int n, int blockSize) {
     const size_t bytes = static_cast<size_t>(n) * sizeof(float);
     const int gridSize = (n + blockSize - 1) / blockSize;
-    const int repeats = 10;
+    const int repeats = 1;
 
     std::vector<float> h_a(n, 1.0f);
     std::vector<float> h_b(n, 2.0f);
@@ -74,8 +74,8 @@ int runBenchmark(int n, int blockSize) {
 }
 
 int main() {
-    std::vector<int> n_values = {1 << 10, 1 << 30, 1 << 20, 1 << 24, 1 << 45, 1 << 60};
-    std::vector<int> block_values = {64, 128, 256, 512, 1024};
+    std::vector<int> n_values = {1 << 20};
+    std::vector<int> block_values = { 256};
 
     std::cout << "n,bytes,blockSize,gridSize,h2d_ms,kernel_ms_avg,d2h_ms,repeats,passed\n";
 
