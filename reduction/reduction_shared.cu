@@ -25,8 +25,8 @@ __global__ void reduce_naive(const float* input, float* partial, int n) {
     __syncthreads();
 
     // Naive interleaved reduction
-    for (unsigned int stride = 1; stride < blockDim.x; stride *= 2) {
-        if ((tid % (2 * stride)) == 0 && (tid + stride) < blockDim.x) {
+    for (unsigned int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+        if (tid < stride) {
             sdata[tid] += sdata[tid + stride];
         }
         __syncthreads();
@@ -42,8 +42,8 @@ float cpu_sum(const std::vector<float>& data) {
 }
 
 int main() {
-    int n = 50;          // 50 elements
-    int block_size = 64;
+    int n = 1 << 20;          
+    int block_size = 256;
     int grid_size = (n + block_size - 1) / block_size;
 
     std::vector<float> h_input(n);
@@ -84,12 +84,51 @@ int main() {
 }
 
 
-/**
-stride means how far ahead a thread looks to combine another value during reduction.
+/*Real difference
+Naive reduction
 
-Example:
+Uses:
 
-stride = 1 → add neighbor
-stride = 2 → add value 2 positions away
-stride = 4 → add value 4 positions away
- */
+if ((tid % (2 * stride)) == 0)
+
+This causes:
+
+awkward active thread pattern
+more branch divergence
+extra modulo work
+less efficient execution
+
+Example active threads:
+
+stride 1: 0,2,4,6
+stride 2: 0,4
+stride 4: 0
+Improved shared reduction
+
+Uses:
+
+if (tid < stride)
+
+This causes:
+
+cleaner thread pattern
+simpler control flow
+better execution behavior
+
+Example active threads:
+
+stride 4: 0,1,2,3
+stride 2: 0,1
+stride 1: 0
+Why error is similar
+
+Because both are still summing the same numbers in a very similar reduction style.
+
+So:
+
+same math goal
+similar floating-point accumulation behavior
+similar final numerical error
+
+The improved version is not mainly about accuracy.
+It is about making the GPU do the work more efficiently. */
