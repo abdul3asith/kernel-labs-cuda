@@ -22,3 +22,8 @@ For `n = 1 << 30` and `blockSize = 512`:
 - D2H copy: 35.41%
 
 In this setup, H2D Copy was the largest contributor to runtime.
+
+session - 4
+
+# reduction_warp(sets of 32 threads)
+Added a warp-level reduction finish to eliminate unnecessary full-block synchronization once only 32 threads remain active. This better matches CUDA’s execution model and reduces overhead in the final reduction stages.

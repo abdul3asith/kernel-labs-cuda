@@ -1,0 +1,3 @@
+Designed a cloud-based CUDA benchmarking lab using Modal GPUs, evaluating kernel performance across memory and execution patterns
+Optimized reduction and matrix multiplication kernels achieving X–Y% speedup via shared memory and warp-level primitives
+Built an automated experiment pipeline analyzing GPU memory bandwidth, occupancy, and scaling behavior across workloads
