@@ -4,6 +4,9 @@
 #include <random>
 #include <numeric>
 #include <cmath>
+#include <fstream>
+#include <iomanip>
+#include <string>
 
 #define CHECK_CUDA(call)                                                         \
     do {                                                                         \
@@ -24,7 +27,6 @@ __global__ void reduce_naive(const float* input, float* partial, int n) {
     sdata[tid] = (global_idx < n) ? input[global_idx] : 0.0f;
     __syncthreads();
 
-    // Naive interleaved reduction
     for (unsigned int stride = 1; stride < blockDim.x; stride *= 2) {
         if ((tid % (2 * stride)) == 0 && (tid + stride) < blockDim.x) {
             sdata[tid] += sdata[tid + stride];
@@ -42,54 +44,89 @@ float cpu_sum(const std::vector<float>& data) {
 }
 
 int main() {
-    int n = 50;          // 50 elements
-    int block_size = 64;
-    int grid_size = (n + block_size - 1) / block_size;
+    std::vector<int> sizes = {1 << 20, 1 << 22, 1 << 24};
+    std::vector<int> block_sizes = {64, 128, 256, 512};
 
-    std::vector<float> h_input(n);
+    std::ofstream csv("naive_results.csv");
+    csv << "kernel,n,block_size,grid_size,kernel_ms,throughput_melems_per_sec,abs_error,rel_error\n";
+
     std::mt19937 rng(42);
     std::uniform_real_distribution<float> dist(0.0f, 1.0f);
 
-    for (int i = 0; i < n; i++) {
-        h_input[i] = dist(rng);
+    for (int n : sizes) {
+        std::vector<float> h_input(n);
+        for (int i = 0; i < n; i++) h_input[i] = dist(rng);
+
+        float ref_sum = cpu_sum(h_input);
+
+        for (int block_size : block_sizes) {
+            int grid_size = (n + block_size - 1) / block_size;
+
+            float* d_input = nullptr;
+            float* d_partial = nullptr;
+
+            CHECK_CUDA(cudaMalloc(&d_input, n * sizeof(float)));
+            CHECK_CUDA(cudaMalloc(&d_partial, grid_size * sizeof(float)));
+            CHECK_CUDA(cudaMemcpy(d_input, h_input.data(), n * sizeof(float), cudaMemcpyHostToDevice));
+
+            std::vector<float> h_partial(grid_size);
+
+            reduce_naive<<<grid_size, block_size, block_size * sizeof(float)>>>(d_input, d_partial, n);
+            CHECK_CUDA(cudaGetLastError());
+            CHECK_CUDA(cudaDeviceSynchronize());
+
+            cudaEvent_t start, stop;
+            CHECK_CUDA(cudaEventCreate(&start));
+            CHECK_CUDA(cudaEventCreate(&stop));
+
+            float total_ms = 0.0f;
+            int iters = 20;
+
+            for (int i = 0; i < iters; i++) {
+                CHECK_CUDA(cudaEventRecord(start));
+                reduce_naive<<<grid_size, block_size, block_size * sizeof(float)>>>(d_input, d_partial, n);
+                CHECK_CUDA(cudaEventRecord(stop));
+                CHECK_CUDA(cudaEventSynchronize(stop));
+                CHECK_CUDA(cudaGetLastError());
+
+                float ms = 0.0f;
+                CHECK_CUDA(cudaEventElapsedTime(&ms, start, stop));
+                total_ms += ms;
+            }
+
+            float kernel_ms = total_ms / iters;
+
+            CHECK_CUDA(cudaMemcpy(h_partial.data(), d_partial, grid_size * sizeof(float), cudaMemcpyDeviceToHost));
+
+            float gpu_sum = cpu_sum(h_partial);
+            float abs_error = std::fabs(ref_sum - gpu_sum);
+            float rel_error = abs_error / (std::fabs(ref_sum) + 1e-12f);
+            double throughput = ((double)n / (kernel_ms / 1000.0)) / 1e6;
+
+            csv << "naive,"
+                << n << ","
+                << block_size << ","
+                << grid_size << ","
+                << std::fixed << std::setprecision(6) << kernel_ms << ","
+                << std::fixed << std::setprecision(3) << throughput << ","
+                << std::scientific << abs_error << ","
+                << std::scientific << rel_error << "\n";
+
+            std::cout << "naive | n=" << n
+                      << " | block=" << block_size
+                      << " | kernel_ms=" << std::fixed << std::setprecision(6) << kernel_ms
+                      << " | throughput=" << std::fixed << std::setprecision(3) << throughput
+                      << " M elems/s | abs_error=" << std::scientific << abs_error
+                      << std::endl;
+
+            CHECK_CUDA(cudaEventDestroy(start));
+            CHECK_CUDA(cudaEventDestroy(stop));
+            CHECK_CUDA(cudaFree(d_input));
+            CHECK_CUDA(cudaFree(d_partial));
+        }
     }
 
-    std::vector<float> h_partial(grid_size);
-
-    float* d_input = nullptr;
-    float* d_partial = nullptr;
-
-    CHECK_CUDA(cudaMalloc(&d_input, n * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&d_partial, grid_size * sizeof(float)));
-
-    CHECK_CUDA(cudaMemcpy(d_input, h_input.data(), n * sizeof(float), cudaMemcpyHostToDevice));
-
-    reduce_naive<<<grid_size, block_size, block_size * sizeof(float)>>>(d_input, d_partial, n);
-    CHECK_CUDA(cudaGetLastError());
-    CHECK_CUDA(cudaDeviceSynchronize());
-
-    CHECK_CUDA(cudaMemcpy(h_partial.data(), d_partial, grid_size * sizeof(float), cudaMemcpyDeviceToHost));
-
-    float gpu_sum = cpu_sum(h_partial);
-    float ref_sum = cpu_sum(h_input);
-
-    std::cout << "CPU sum: " << ref_sum << std::endl;
-    std::cout << "GPU sum: " << gpu_sum << std::endl;
-    std::cout << "Absolute error: " << std::fabs(ref_sum - gpu_sum) << std::endl;
-
-    CHECK_CUDA(cudaFree(d_input));
-    CHECK_CUDA(cudaFree(d_partial));
-
+    csv.close();
+    std::cout << "Saved naive_results.csv\n";
     return 0;
 }
-
-
-/**
-stride means how far ahead a thread looks to combine another value during reduction.
-
-Example:
-
-stride = 1 → add neighbor
-stride = 2 → add value 2 positions away
-stride = 4 → add value 4 positions away
- */
