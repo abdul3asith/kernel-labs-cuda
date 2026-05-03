@@ -18,8 +18,8 @@ def run_activation(cuda_code: str):
     workdir = Path("/root/project")
     workdir.mkdir(parents=True, exist_ok=True)
 
-    cu_file = workdir / "activation_gpu.cu"
-    exe_file = workdir / "activation_gpu"
+    cu_file = workdir / "benchmark_gpu.cu"
+    exe_file = workdir / "benchmark_gpu"
 
     cu_file.write_text(cuda_code)
 
@@ -56,7 +56,7 @@ def main():
     # runner is inside relu-gelu/, so parent.parent = project root
     project_root = Path(__file__).resolve().parent.parent
 
-    cuda_code = (project_root / "relu-gelu" / "activation_gpu.cu").read_text()
+    cuda_code = (project_root / "relu-gelu" / "benchmark_gpu.cu").read_text()
 
     result = run_activation.remote(cuda_code)
 
