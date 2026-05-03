@@ -1,9 +1,9 @@
 # CUDA Kernel Lab
 
 
-session - 1
+### session - 1
 
-session - 2
+### session - 2
 ## Observations
 
 - For small input sizes, kernel runtime changes only slightly because launch overhead dominates.
@@ -12,7 +12,7 @@ session - 2
 - In my benchmark runs, kernel execution time was higher than both host-to-device and device-to-host transfer time for the tested configurations. This indicates that, in this setup, the compute stage was the dominant contributor to runtime.
 
 
-session - 3
+### session - 3
 ## Time Breakdown for Representative Run
 
 For `n = 1 << 30` and `blockSize = 512`:
@@ -23,7 +23,10 @@ For `n = 1 << 30` and `blockSize = 512`:
 
 In this setup, H2D Copy was the largest contributor to runtime.
 
-session - 4
+### session - 4
 
-# reduction_warp(sets of 32 threads)
+## reduction_warp(sets of 32 threads)
 Added a warp-level reduction finish to eliminate unnecessary full-block synchronization once only 32 threads remain active. This better matches CUDA’s execution model and reduces overhead in the final reduction stages.
+
+### session - 5
+Coalescing means combining many small memory accesses into one big memory transaction.

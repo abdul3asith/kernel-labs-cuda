@@ -1,31 +1,31 @@
 # profile_cuda.py
 import modal
 
+# NGC PyTorch image — comes with nvcc, nsys, ncu, PyTorch, Triton preinstalled.
+# First build is ~2-3 min; cached afterwards.
 image = (
     modal.Image.from_registry(
-        "nvidia/cuda:12.4.1-devel-ubuntu22.04",
+        "nvcr.io/nvidia/pytorch:24.10-py3",
         add_python="3.11",
     )
-    .apt_install("wget", "curl", "git", "gnupg", "libxcb-cursor0")
     .run_commands(
-        # Install Nsight Systems from the official .deb
-        "wget -q https://developer.nvidia.com/downloads/assets/tools/secure/nsight-systems/2024_5/nsight-systems-2024.5.1_2024.5.1.113-1_amd64.deb -O /tmp/nsys.deb || "
-        "wget -q https://developer.download.nvidia.com/devtools/nsight-systems/nsight-systems-2024.5.1_2024.5.1.113-1_amd64.deb -O /tmp/nsys.deb",
-        "apt-get update",
-        "apt-get install -y /tmp/nsys.deb",
-        "rm /tmp/nsys.deb",
-        "which nsys && nsys --version",  # build fails here if nsys is missing
-    )
-    .run_commands(
-        "curl -L https://raw.githubusercontent.com/harrism/nsys_easy/main/nsys_easy "
-        "-o /usr/local/bin/nsys_easy && chmod +x /usr/local/bin/nsys_easy"
+        "which nsys && nsys --version",  # fail fast if nsys is missing
     )
     .add_local_dir(".", "/root/src")
 )
+
+# A Modal Volume to persist .nsys-rep report files between runs.
+# This is what lets you download them to your laptop.
+reports_volume = modal.Volume.from_name("nsys-reports", create_if_missing=True)
+
 app = modal.App("cuda-profiler", image=image)
 
 
-@app.function(gpu="T4", timeout=600)
+@app.function(
+    gpu="T4",
+    timeout=600,
+    volumes={"/reports": reports_volume},
+)
 def profile(source_file: str = "intro.cu"):
     import os
     import subprocess
@@ -34,26 +34,33 @@ def profile(source_file: str = "intro.cu"):
     src_path = os.path.join(src_dir, source_file)
     binary_name = os.path.splitext(source_file)[0]
     binary_path = os.path.join(src_dir, binary_name)
-    report_path = "/tmp/report"  # nsys will create /tmp/report.nsys-rep
+    report_path = f"/reports/{binary_name}_report"
 
-    print("=== nvidia-smi ===")
-    print(subprocess.run(["nvidia-smi"], capture_output=True, text=True).stdout)
-
-    print(f"=== Compiling {source_file} ===")
-    subprocess.run(
-        ["nvcc", "-O3", "-o", binary_path, src_path],
-        check=True,
+    # Diagnostic: check what nsys thinks of this environment
+    print("=== nsys status ===")
+    print(
+        subprocess.run(["nsys", "status", "-e"], capture_output=True, text=True).stdout
     )
 
-    # Step 1: run the trace (no stats yet — separate from analysis)
-    print(f"=== Profiling {binary_name} ===")
+    print(f"\n=== Compiling {source_file} ===")
+    subprocess.run(["nvcc", "-O3", "-o", binary_path, src_path], check=True)
+
+    print(f"\n=== Profiling {binary_name} ===")
+    env = os.environ.copy()
+    # Force CUPTI to use the in-process injection method, which works
+    # in containers without elevated privileges
+    env["NSYS_NVTX_PROFILER_REGISTER_ONLY"] = "0"
+
     trace = subprocess.run(
         [
             "nsys",
             "profile",
             "-t",
             "cuda",
-            "--cuda-memory-usage=false",
+            "--sample=none",
+            "--cpuctxsw=none",
+            "--trace-fork-before-exec=true",
+            "--cuda-flush-interval=100",
             "--force-overwrite=true",
             "--output",
             report_path,
@@ -62,33 +69,54 @@ def profile(source_file: str = "intro.cu"):
         capture_output=True,
         text=True,
         cwd=src_dir,
+        env=env,
     )
-    print("--- trace stdout ---")
-    print(trace.stdout)
-    print("--- trace stderr ---")
-    print(trace.stderr)
 
-    # Step 2: generate stats from the report
-    print("=== Stats ===")
-    stats = subprocess.run(
-        [
-            "nsys",
-            "stats",
-            "--report",
-            "cuda_gpu_kern_sum",
-            "--report",
-            "cuda_gpu_mem_time_sum",
-            "--format",
-            "table",
-            f"{report_path}.nsys-rep",
-        ],
-        capture_output=True,
-        text=True,
+    print(trace.stdout)
+    print("--- stderr ---")
+    print(trace.stderr)
+    # ... rest of your stats calls
+    # Stats — read the report and print human-friendly tables
+    print("\n=== Kernel timing summary ===")
+    print(
+        subprocess.run(
+            [
+                "nsys",
+                "stats",
+                "--report",
+                "cuda_gpu_kern_sum",
+                "--format",
+                "table",
+                f"{report_path}.nsys-rep",
+            ],
+            capture_output=True,
+            text=True,
+        ).stdout
     )
-    print("--- stats stdout ---")
-    print(stats.stdout)
-    print("--- stats stderr ---")
-    print(stats.stderr)
+
+    print("\n=== Memory transfer summary ===")
+    print(
+        subprocess.run(
+            [
+                "nsys",
+                "stats",
+                "--report",
+                "cuda_gpu_mem_time_sum",
+                "--format",
+                "table",
+                f"{report_path}.nsys-rep",
+            ],
+            capture_output=True,
+            text=True,
+        ).stdout
+    )
+
+    # Persist the report file so we can download it locally
+    reports_volume.commit()
+    print(f"\nReport saved to volume: {report_path}.nsys-rep")
+    print(
+        f"Download with: modal volume get nsys-reports {binary_name}_report.nsys-rep ./reports/"
+    )
 
 
 @app.local_entrypoint()
